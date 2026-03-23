@@ -330,3 +330,176 @@ ON U.id = O.user_id;
 ```
 
 - 왼쪽 테이블 기준으로 **모든 행을 유지하면서 조인**
+
+## 오라클 데이터베이스 복구, 복원 시 주의
+
+### dump
+
+- impdb 방식과 imp 방식이 있음
+- 덤프가 이뤄진 동일한 방식으로 복원을 해야함
+- dump 파일 내부 DDDL에 `TABLESPACE “SOMETHING”` 이 명시가 되어 있는 경우 tablespace도 만들어야함
+- 복구 사용자와 tablespace가 달라도 되는 것 같음, 파일만 만들어주면 동작함
+
+### tablespace 확인
+
+```sql
+SELECT NAME FROM V$DATABASE
+
+  - `C:\APP\ADMINISTRATOR\ORADATA\K3\~~~~USERS01.DBF`
+  - `C:\APP\ADMINISTRATOR\ORADATA\K3\~~~~UNDOTBS01.DBF`
+  - `C:\APP\ADMINISTRATOR\ORADATA\K3\~~~~SYSAUX01.DBF`
+  - `C:\APP\ADMINISTRATOR\ORADATA\K3\~~~~SYSTEM01.DBF`
+  - `C:\APP\ADMINISTRATOR\ORADATA\K3\~~~~EXAMPLE01.DBF`
+  - `C:\APP\ADMINISTRATOR\ORADATA\K3.DBF`
+```
+
+### 오라클은 객체 소유자와 저장공간을 분리해서 관리함
+
+- 소유자와 저장공간이 다를 수가 있음
+- 이런 경우에는 각각 권한을 맞춰줘야함
+
+## 오라클 디비 구조
+
+- 데이터베이스 > 인스턴스 > 사용자 > 스키마
+- 데이터베이스
+    - 현재 프로젝트의 경우에는 k3가 데이터베이스
+- 인스턴스
+    - 메모리와 백그라운드 프로세스 집합
+- 사용자
+    - 디비 객체를 소유하는 계정
+- 스키마
+    - 테이블, 시퀀스, 뷰, 프로시저 등
+- 테이블 스페이스
+    - oracle 객체가 저장되는 논리 저장공간
+    - 사용자와 테이블 스페이스는 다르다
+- 데이터 파일
+    - 실제 os 파일
+    - `.DBF`
+    - 테이블스페이스는 논리 단위이고, 데이터파일은 실제 디스크 파일
+
+```sql
+Database
+  -> Tablespace
+    -> Datafile(.dbf)
+  -> User/Schema
+    -> Table / Index / Sequence / View
+```
+
+## 정리
+
+- Oracle dump는 단순 SQL 파일이 아니다 ⇒ dump 생성 세대와 import 도구 세대가 다르면 예외가 발생한다, 새 스키마로 restore하더라도 저장공간 참조는 원래 이름을 유지한다.
+- Oracle은 객체 정의 안에 tablespace 지정이 들어가 있을 수 있다.
+- 최종적으로 `PORTAL01.DBF` 같은 새 파일명으로 우회 생성하는 것이 안전했다
+
+## 명령어 정리
+
+### 오라클 환경변수 설정
+
+```sql
+set ORACLE_HOME=D:\oracle\product\11.2.0\dbhome_1
+set NLS_LANG=KOREAN_KOREA.KO16MSWIN949
+set PATH=%ORACLE_HOME%\bin;%PATH%
+exp PORTAL/PORTAL123##@NICOMCS file=D:\backup2026-03-20.dmp log=D:\backup2026-03-20.log owner=PORTAL
+```
+
+### sqlplus 찾기
+
+```sql
+where sqlplus
+where exp
+where imp
+
+# 오라클이 서버에 2개가 설치가 되어 있을 수가 있다
+C:\app\Administrator\product\11.2.0\dbhome_1\BIN\sqlplus / as sysdba
+
+# 백업 시 버전 명시
+C:\app\Administrator\product\11.2.0\dbhome_1\BIN\imp "'/ as sysdba'" file=D:\backup2026-03-20.dmp log=D:\import_portal_test.log fromuser=PORTAL touser=PORTAL_TEST
+```
+
+### 데이터베이스 찾기
+
+```sql
+SELECT NAME FROM V$DATABASE;
+```
+
+### 데이터 파일 경로 찾기
+
+```sql
+SELECT FILE_NAME FROM DBA_DATA_FILES;
+```
+
+### 테이블스페이스 만들기
+
+```sql
+CREATE TABLESPACE PORTAL_TEST
+DATAFILE 'C:\APP\ADMINISTRATOR\ORADATA\K3\PORTAL_TEST.DBF'
+SIZE 500M
+AUTOEXTEND ON NEXT 100M MAXSIZE UNLIMITED;
+```
+
+### 사용자 생성 후 권한 부여
+
+```sql
+// 사용자 삭제
+DROP USER PORTAL_TEST CASCADE;
+
+// 사용자 생성
+CREATE USER PORTAL_TEST IDENTIFIED BY PORTAL123##
+DEFAULT TABLESPACE PORTAL_TEST
+TEMPORARY TABLESPACE TEMP;
+
+// 권한 셋팅
+GRANT CONNECT, RESOURCE TO PORTAL_TEST;
+GRANT CREATE VIEW TO PORTAL_TEST;
+GRANT CREATE SEQUENCE TO PORTAL_TEST;
+GRANT CREATE SYNONYM TO PORTAL_TEST;
+GRANT CREATE TRIGGER TO PORTAL_TEST;
+GRANT UNLIMITED TABLESPACE TO PORTAL_TEST;
+ALTER USER PORTAL_TEST QUOTA UNLIMITED ON PORTAL_TEST;
+ALTER USER PORTAL_TEST QUOTA UNLIMITED ON PORTAL;
+ALTER USER PORTAL_TEST QUOTA UNLIMITED ON USERS;
+```
+
+## 에러 정리
+
+### IMP-00010: 엑스포트 파일이 유효하지 않고, 헤더가 검증에 실패했습니다
+
+- 상황: 10g XE `imp` 사용
+- 원인: 11g dump를 10g `imp`로 읽으려 했음
+- 조치: 11g `imp`로 변경
+
+### IMP-00002: dump file open failed
+
+- 상황: 파일명을 잘못 입력하거나 전체 명령을 잘못 입력했을 때 발생
+- 원인: 경로 오타 또는 shell 입력 오류
+- 조치: dump 경로를 직접 `dir`로 확인하고 다시 실행
+
+### ORA-01435: 사용자가 존재하지 않습니다
+
+- 상황: import 대상 계정이 없는 상태
+- 원인: `PORTAL_TEST`가 현재 접속한 11g DB에 생성되지 않았음
+- 조치: 해당 DB에 `PORTAL_TEST` 생성 후 재실행
+
+### ORA-00959: 테이블스페이스 'PORTAL'이(가) 존재하지 않습니다
+
+- 상황: 일부 테이블 생성 중 실패
+- 원인: dump 내부 DDL이 `TABLESPACE "PORTAL"` 직접 참조
+- 조치: `PORTAL` tablespace 생성
+
+### IMP-00015: 객체가 이미 존재하므로 ... 실패
+
+- 상황: 부분 실패 후 같은 사용자로 재실행
+- 원인: 시퀀스, 테이블, 뷰가 이미 생성된 상태
+- 조치: `DROP USER PORTAL_TEST CASCADE` 후 깨끗하게 다시 생성
+
+### ORA-01119 / ORA-27038 / ORA-27086
+
+- 상황: datafile 생성 시 실패
+- 원인: 기존 파일 존재, OS 잠금, 파일명 충돌
+- 조치: 다른 파일명 사용
+
+### IMP-00008: unrecognized statement
+
+- 상황: 구형 dump와 최신 환경 조합에서 일부 발생 가능
+- 원인: export/import 세대 차이, dump 포맷 차이
+- 조치: 가능하면 원본 세대와 맞는 11g 환경 사용
